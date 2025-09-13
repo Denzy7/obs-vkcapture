@@ -89,6 +89,13 @@ struct capture_control_data {
 #define CAPTURE_CONTROL_DATA_SIZE 32
 static_assert(sizeof(struct capture_control_data) == CAPTURE_CONTROL_DATA_SIZE, "size mismatch");
 
+struct capture_stats_data
+{
+    uint32_t time;
+    uint64_t bytes;
+};
+#define CAPTURE_STATS_SHM "/com_obsproject_vkcapture_CaptureStats"
+
 void capture_init();
 void capture_update_socket();
 void capture_init_shtex(

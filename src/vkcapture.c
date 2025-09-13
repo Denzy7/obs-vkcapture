@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <obs-module.h>
 #include <obs-nix-platform.h>
+#include <obs-frontend-api.h>
 
 #include <poll.h>
 #include <errno.h>
@@ -83,6 +84,10 @@ static struct {
     pthread_mutex_t mutex;
     DARRAY(struct pollfd) fds;
     DARRAY(vkcapture_client_t) clients;
+    bool recording, consumed;
+    struct obs_output* output;
+    struct capture_stats_data* sdata;
+    double time_hires;
 } server;
 
 static int source_instances = 0;
@@ -520,10 +525,16 @@ static void vkcapture_source_video_tick(void *data, float seconds)
             ctx->client_id = client->id;
         }
     }
+    
+    if(server.recording && server.sdata)
+    {
+        server.time_hires += seconds;
+        server.sdata->time = server.time_hires;
+    }
 
     pthread_mutex_unlock(&server.mutex);
 
-    UNUSED_PARAMETER(seconds);
+    /*UNUSED_PARAMETER(seconds);*/
 }
 
 static void vkcapture_source_render(void *data, gs_effect_t *effect)
@@ -605,6 +616,12 @@ static void vkcapture_source_render(void *data, gs_effect_t *effect)
         }
     }
 
+    if(server.recording && server.sdata)
+    {
+        server.consumed = true;
+        server.sdata->bytes = obs_output_get_total_bytes(server.output);
+        /*printf("%lu %u\n", server.sdata->bytes, server.sdata->time);*/
+    }
     gs_enable_framebuffer_srgb(previous);
 }
 
@@ -712,6 +729,47 @@ static struct obs_source_info vkcapture_input = {
     .icon_type = OBS_ICON_TYPE_GAME_CAPTURE,
     .video_get_color_space = vkcapture_get_color_space,
 };
+
+
+void vkcapture_frontend_event_callback(enum obs_frontend_event event, void* private_data)
+{
+    switch (event) {
+
+        case OBS_FRONTEND_EVENT_RECORDING_STARTING:
+            {
+                /* afaict refs seem to persist */
+                if(!server.output)
+                    server.output = obs_frontend_get_recording_output();
+                server.recording = true;
+                server.consumed = false;
+                server.time_hires = 0;
+                server.sdata = NULL;
+                int fd = shm_open(CAPTURE_STATS_SHM, O_RDWR, 0666);
+                if(fd < 0)
+                {
+                    blog(LOG_WARNING, "cannot shm_open %s [ %s ]. obs-gamecapture should be started before OBS for capture stats to work", CAPTURE_STATS_SHM, strerror(errno));
+                }else {
+                    server.sdata = mmap(NULL, sizeof(struct capture_stats_data),
+                            PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                    close(fd);
+                }
+                if(server.sdata){
+                    server.sdata->time = 0;
+                    server.sdata->bytes = 0;
+                }
+            }
+
+        case OBS_FRONTEND_EVENT_RECORDING_STOPPING:
+            {
+                if(server.consumed){
+                    server.recording = false;
+                }
+            }
+
+        default:
+            break;
+    }
+}
 
 static bool server_wakeup()
 {
@@ -945,6 +1003,8 @@ static void *server_thread_run(void *data)
     return NULL;
 }
 
+
+
 bool obs_module_load(void)
 {
     enum obs_nix_platform_type platform = obs_get_nix_platform();
@@ -968,8 +1028,8 @@ bool obs_module_load(void)
         blog(LOG_ERROR, "Failed to create thread");
         return false;
     }
-    pthread_setname_np(server.thread, PLUGIN_NAME);
-
+    pthread_setname_np(server.thread, PLUGIN_NAME); 
+    obs_frontend_add_event_callback(vkcapture_frontend_event_callback, NULL);
     obs_register_source(&vkcapture_input);
     blog(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
 
@@ -982,7 +1042,7 @@ void obs_module_unload()
     if (server_wakeup()) {
         pthread_join(server.thread, NULL);
     }
-
+    obs_output_release(server.output);
     blog(LOG_INFO, "plugin unloaded");
 }
 
