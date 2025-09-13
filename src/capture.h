@@ -95,6 +95,7 @@ struct capture_stats_data
     uint64_t bytes;
 };
 #define CAPTURE_STATS_SHM "/com_obsproject_vkcapture_CaptureStats"
+#define CAPTURE_STATS_SEM "/com_obsproject_vkcapture_CaptureStatsSem"
 
 void capture_init();
 void capture_update_socket();

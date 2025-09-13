@@ -34,6 +34,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <linux/dma-buf.h>
+#include <semaphore.h>
 
 #include "utils.h"
 #include "capture.h"
@@ -88,6 +89,7 @@ static struct {
     struct obs_output* output;
     struct capture_stats_data* sdata;
     double time_hires;
+    sem_t* capture_stats_sem;
 } server;
 
 static int source_instances = 0;
@@ -744,24 +746,36 @@ void vkcapture_frontend_event_callback(enum obs_frontend_event event, void* priv
                 server.consumed = false;
                 server.time_hires = 0;
                 server.sdata = NULL;
-                int fd = shm_open(CAPTURE_STATS_SHM, O_RDWR, 0666);
-                if(fd < 0)
+
+                int fd_shm;
+                if((fd_shm = shm_open(CAPTURE_STATS_SHM, O_CREAT | O_RDWR, 0666)) < 0)
                 {
-                    blog(LOG_WARNING, "cannot shm_open %s [ %s ]. obs-gamecapture should be started before OBS for capture stats to work", CAPTURE_STATS_SHM, strerror(errno));
-                }else {
-                    server.sdata = mmap(NULL, sizeof(struct capture_stats_data),
-                            PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-                    close(fd);
+                    hlog("shm_open error %s", strerror(errno));
                 }
-                if(server.sdata){
-                    server.sdata->time = 0;
-                    server.sdata->bytes = 0;
+                if(fd_shm > 0 && ftruncate(fd_shm, sizeof(struct capture_stats_data)) < 0)
+                {
+                    hlog("ftruncate error %s", strerror(errno));
                 }
+
+                if((server.sdata = mmap(NULL, sizeof(struct capture_stats_data), PROT_READ | PROT_WRITE, MAP_SHARED, fd_shm, 0)))
+                {
+                    memset(server.sdata, 0, sizeof(struct capture_stats_data));
+                    close(fd_shm);
+                }
+
+                if((server.capture_stats_sem = sem_open(CAPTURE_STATS_SEM, O_CREAT, 0644, 0)) == SEM_FAILED)
+                {
+                    hlog("sem_open error %s", strerror(errno));
+                }
+
+                sem_post(server.capture_stats_sem);
             }
 
         case OBS_FRONTEND_EVENT_RECORDING_STOPPING:
             {
                 if(server.consumed){
+                    sem_post(server.capture_stats_sem);
+                    shm_unlink(CAPTURE_STATS_SHM);
                     server.recording = false;
                 }
             }

@@ -30,6 +30,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <sys/socket.h>
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <semaphore.h>
 
 static struct {
     int connfd;
@@ -116,21 +117,9 @@ void capture_init()
     memset(&data, 0, sizeof(data));
     data.connfd = -1;
 
-    int fd;
-    if((fd = shm_open(CAPTURE_STATS_SHM, O_CREAT | O_RDWR, 0666)) < 0)
+    if(sem_open(CAPTURE_STATS_SEM, O_CREAT, 0644, 0) == SEM_FAILED)
     {
-        hlog("shm_open error %s", strerror(errno));
-    }
-    if(fd > 0 && ftruncate(fd, sizeof(struct capture_stats_data)) < 0)
-    {
-        hlog("ftruncate error %s", strerror(errno));
-    }
-
-    void* addr;
-    if((addr = mmap(NULL, sizeof(struct capture_stats_data), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)))
-    {
-        memset(addr, 0, sizeof(struct capture_stats_data));
-        close(fd);
+        hlog("sem_open error %s", strerror(errno));
     }
 }
 
@@ -227,11 +216,6 @@ void capture_init_shtex(
 void capture_stop()
 {
     data.capturing = false;
-    /*TODO: find a better place to shm_unlink
-     * ideally at the end of the program.or 
-     * a terminate function in library
-     */
-    /*shm_unlink(CAPTURE_STATS_SHM);*/
 }
 
 bool capture_should_stop()
